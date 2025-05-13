@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "sqlite": {
+      "command": "uvx",
+      "args": ["mcp-server-sqlite", "--db-path", "C:/Users/martin.mauri/mcp_simple_chatbot/test.db"]
+    },
+    "puppeteer": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
+    },
+    "weather": {
+            "command": "uv",
+            "args": [
+                "--directory",                
+                "C:\\Users\\martin.mauri\\mcp_simple_chatbot", 
+                "run",
+                "server.py"
+            ]
+    }
+  }
+}
