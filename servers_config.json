@@ -1,21 +1,26 @@
 {
-  "mcpServers": {
+  "mcpServers": {    
+    "weather": {
+      "command": "uv",
+      "args": [
+        "--directory",                
+        "C:\\Users\\martin.mauri\\mcp_simple_chatbot", 
+        "run",
+        "server.py"]
+    },
+    "MongoDB": {
+			"command": "npx",
+			"args": [
+				"mongodb-mcp-server",
+				"--connectionString",
+				"mongodb+srv://mcpuser:mcp1234@mcp.ndnxscx.mongodb.net/mcpdb?retryWrites=true&w=majority&appName=MCP"
+			]
+		},
     "sqlite": {
       "command": "uvx",
-      "args": ["mcp-server-sqlite", "--db-path", "C:/Users/martin.mauri/mcp_simple_chatbot/test.db"]
-    },
-    "puppeteer": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
-    },
-    "weather": {
-            "command": "uv",
-            "args": [
-                "--directory",                
-                "C:\\Users\\martin.mauri\\mcp_simple_chatbot", 
-                "run",
-                "server.py"
-            ]
+      "args": ["mcp-server-sqlite", 
+        "--db-path", 
+        "./test.db"]
     }
   }
 }
