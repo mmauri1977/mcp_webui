@@ -247,8 +247,8 @@ class LLMClient:
         }
         payload = {
             "messages": messages,
-            #"model": "llama-3.2-90b-vision-preview",
-            "model": "llama3-8b-8192",
+            "model": "llama-3.1-8b-instant",
+            #"model": "llama3-8b-8192",
             #"model": "meta-llama/llama-4-scout-17b-16e-instruct",
             "temperature": 0.7,
             "max_tokens": 4096,
@@ -366,6 +366,7 @@ class ChatSession:
                 f"{tools_description}\n"
                 "Choose the appropriate tool based on the user's question and execute the tool to perform the action. "
                 "If no tool is needed, reply directly.\n\n"
+                "if a tool does not work, explain the error to the user and suggest a different tool.\n\n"
                 "IMPORTANT: When you need to use a tool, you must ONLY respond with "
                 "the exact JSON object format below, nothing else:\n"
                 "{\n"
