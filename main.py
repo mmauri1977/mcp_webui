@@ -228,21 +228,34 @@ class LLMClient:
         self.api_key: str = api_key
 
     def get_response(self, messages: list[dict[str, str]], tools: list[dict] = None) -> str:
+        #url = "https://api.together.xyz/v1/chat/completions"
+        #headers = {
+        #    "Authorization": f"Bearer 747b8e27df4f50bca407b29da55d05c6fe9bddc80ce71fea5ceb205d0adad622",
+        #    "Content-Type": "application/json"
+        #}
+        #payload = {
+        #    "model": "mistralai/Mistral-7B-Instruct-v0.2",
+        #    "messages": messages,
+        #    "temperature": 0.7
+        #}
+
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+           "Content-Type": "application/json",
+           "Authorization": f"Bearer {self.api_key}",
         }
         payload = {
-            "messages": messages,
-            "model": "llama-3.1-8b-instant",
-            "temperature": 0.7,
-            "max_tokens": 4096,
-            "top_p": 1,
-            "stream": False,
-            "tools": tools,
-            "tool_choice": "auto"
+           "messages": messages,
+           "model": "llama-3.1-8b-instant",
+           #"model": "Llama-3-Groq-8B-Tool-Use",
+           "temperature": 0.7,
+           "max_tokens": 4096,
+           "top_p": 1,
+           "stream": False,
+           "tools": tools,
+           "tool_choice": "auto"
         }
+        
 
         max_retries = 5
         backoff = 2  # start at 2 seconds
