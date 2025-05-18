@@ -1,212 +1,117 @@
-import asyncio
-import logging
 import sys
-import threading
 import streamlit as st
-from main import Server, LLMClient, Configuration, ChatSession, Tool
-from typing import List
+import asyncio
+import json
+from main import Configuration, Server, LLMClient, ChatSession
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler()]
-)
+# Streamlit page must be configured first
+st.set_page_config(page_title="MCP Chatbot", layout="wide")
 
-# Set Windows asyncio event loop policy
+# Ensure Windows uses ProactorEventLoop for subprocess support
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-async def chat():
-    """Initialize and run the Streamlit chat application."""
-    logging.info(f"Running chat in thread: {threading.current_thread().name}")
-    # Initialize session state
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "chat_session" not in st.session_state:
-        try:
-            config = Configuration()
-            server_config = config.load_config("servers_config.json")
-            servers = [Server(name, srv_config) for name, srv_config in server_config["mcpServers"].items()]
-            llm_client = LLMClient(config.llm_api_key)
-            chat_session = ChatSession(servers, llm_client)
-            
-            # Initialize servers with timeout
-            for server in servers:
-                try:
-                    await asyncio.wait_for(server.initialize(), timeout=30.0)
-                except asyncio.TimeoutError:
-                    logging.error(f"Timeout initializing server {server.name}")
-                    st.error(f"Server {server.name} failed to initialize: Timeout")
-                    await chat_session.cleanup_servers()
-                    raise
-                except asyncio.CancelledError as e:
-                    logging.error(f"Server {server.name} initialization cancelled: {e}")
-                    await chat_session.cleanup_servers()
-                    raise
-                except Exception as e:
-                    logging.error(f"Failed to initialize server {server.name}: {e}")
-                    st.error(f"Server {server.name} failed to initialize: {str(e)}")
-                    await chat_session.cleanup_servers()
-                    raise
-            
-            # Cache tools
-            all_tools = []
-            for server in servers:
-                try:
-                    tools = await asyncio.wait_for(server.list_tools(), timeout=10.0)
-                    all_tools.extend(tools)
-                except asyncio.TimeoutError:
-                    logging.error(f"Timeout listing tools for {server.name}")
-                    st.error(f"Failed to list tools for {server.name}: Timeout")
-                    await chat_session.cleanup_servers()
-                    raise
-                except asyncio.CancelledError as e:
-                    logging.error(f"Tool listing for {server.name} cancelled: {e}")
-                    await chat_session.cleanup_servers()
-                    raise
-                except Exception as e:
-                    logging.error(f"Failed to list tools for {server.name}: {e}")
-                    st.error(f"Failed to list tools for {server.name}: {str(e)}")
-                    await chat_session.cleanup_servers()
-                    raise
-            chat_session.tools_cache = all_tools
-            
-            # Set system message
-            tools_description = "\n".join([tool.format_for_llm() for tool in all_tools])
-            system_message = (
-                "You are a helpful assistant with real access to these tools:\n\n"
-                f"{tools_description}\n"
-                "Choose the appropriate tool based on the user's question and execute the tool to perform the action. "
-                "If no tool is needed, reply directly.\n\n"
-                "If a tool does not work, explain the error to the user and suggest a different tool.\n\n"
-                "IMPORTANT: When you need to use a tool, you must respond with "
-                "the exact JSON object format below, nothing else:\n"
-                "{\n"
-                '    "tool": "tool-name",\ HAP\n'
-                '    "arguments": {\n'
-                '        "argument-name": "value"\n'
-                "    }\n"
-                "}\n\n"
-                "After receiving a tool's response:\n"
-                "1. Transform the raw data into a natural, conversational response\n"
-                "2. Keep responses concise but informative\n"
-                "3. Focus on the most relevant information\n"
-                "4. Use appropriate context from the user's question\n"
-                "5. Avoid simply repeating the raw data\n\n"
-                "Please use only the tools that are explicitly defined above."
-            )
-            st.session_state.messages.append({
-                "role": "system",
-                "content": system_message
-            })
-            st.session_state.chat_session = chat_session
-        except Exception as e:
-            st.error(f"Failed to initialize chat session: {str(e)}")
-            logging.error(f"Initialization error: {str(e)}")
-            await chat_session.cleanup_servers()
-            return
+# Title/header
+st.title("💬 MCP Chatbot")
 
-    # Streamlit UI
-    st.title("MCP Tool-Executing Chatbot")
-    st.write("Interact with the assistant to execute MongoDB, SQLite, or Weather queries.")
+# 1) CACHING BACKEND INITIALIZATION
+@st.cache_resource
+def init_chat_backend():
+    # Create a dedicated event loop for MCP work
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    # Sidebar with tool list and test buttons
-    st.sidebar.title("Available Tools")
-    if st.session_state.chat_session.tools_cache:
-        for tool in st.session_state.chat_session.tools_cache:
-            st.sidebar.markdown(f"**{tool.name}**: {tool.description}")
+    # Load configuration and initialize servers
+    config = Configuration()
+    server_cfg = Configuration.load_config("servers_config.json")
+    servers = [Server(name, cfg) for name, cfg in server_cfg["mcpServers"].items()]
+
+    # Initialize each server exactly once
+    for srv in servers:
+        loop.run_until_complete(srv.initialize())
+
+    # Create LLM client and chat session
+    llm = LLMClient(config.llm_api_key)
+    chat_session = ChatSession(servers, llm)
+    return loop, servers, llm, chat_session
+
+# 2) RETRIEVE CACHED BACKEND
+loop, servers, llm_client, chat_session = init_chat_backend()
+
+# Build the system prompt with available tools (only on first run)
+if "messages" not in st.session_state:
+    tools = []
+    for srv in servers:
+        tools.extend(loop.run_until_complete(srv.list_tools()))
+    desc = "\n".join(t.format_for_llm() for t in tools)
+    system_msg = (
+        "You are an assistant with access to these tools:\n\n"
+        f"{desc}\n\n"
+        "If you need a tool, respond *only* with JSON (no extra text):\n"
+        '{"tool":"<name>","arguments":{…}}\n'
+        "Otherwise, answer as a helpful assistant."
+    )
+    st.session_state.messages = [{"role": "system", "content": system_msg}]
+    st.session_state.history = []
+
+# Display conversation history using chat message bubbles
+for entry in st.session_state.history:
+    if entry["role"] == "user":
+        st.chat_message("user").write(entry["content"])
     else:
-        st.sidebar.markdown("No tools available. Check server initialization.")
+        st.chat_message("assistant").markdown(entry["content"])
 
-    if st.sidebar.button("Test MCP Server"):
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get("http://localhost:8080/tools")
-                st.sidebar.success(f"MCP Server Tools: {response.json()}")
-        except Exception as e:
-            st.sidebar.error(f"MCP Server Test Failed: {str(e)}")
+# Chat input from user
+user_text = st.chat_input("You:")
+if user_text:
+    # Record user message
+    st.session_state.history.append({"role": "user", "content": user_text})
+    st.session_state.messages.append({"role": "user", "content": user_text})
 
-    if st.sidebar.button("Cleanup Servers"):
-        if "chat_session" in st.session_state:
-            await st.session_state.chat_session.cleanup_servers()
-            st.sidebar.success("Servers cleaned up successfully")
-        else:
-            st.sidebar.error("No active chat session to clean up")
-
-    # Display chat history
-    for message in st.session_state.messages:
-        if message["role"] != "system":
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-    # Handle user input
-    if user_input := st.chat_input("Type your message (e.g., 'Query MongoDB for users')..."):
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-
-        with st.spinner("Processing..."):
-            try:
-                chat_session = st.session_state.chat_session
-                # Prepare tools for LLM
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.input_schema
-                        }
-                    }
-                    for tool in chat_session.tools_cache
-                ]
-                # Get LLM response
-                llm_response = chat_session.llm_client.get_response(
-                    st.session_state.messages,
-                    tools=tools
-                )
-                logging.info(f"LLM response: {llm_response}")
-
-                if "content" in llm_response and "rate limit" in llm_response["content"].lower():
-                    st.error("Rate limit reached. Please wait a moment and try again.")
-                    await chat_session.cleanup_servers()
-                    return
-
-                # Process response (handles content or tool_calls)
-                result = await chat_session.process_llm_response(llm_response)
-
-                if result != llm_response.get("content", ""):
-                    st.session_state.messages.append({"role": "assistant", "content": llm_response.get("content", "")})
-                    st.session_state.messages.append({"role": "system", "content": result})
-                    final_response = chat_session.llm_client.get_response(
-                        st.session_state.messages,
-                        tools=tools
-                    )
-                    st.session_state.messages.append({"role": "assistant", "content": final_response.get("content", "")})
-                else:
-                    st.session_state.messages.append({"role": "assistant", "content": result})
-                    final_response = {"content": result}
-
-                with st.chat_message("assistant"):
-                    st.markdown(final_response.get("content", "No response content"))
-
-            except asyncio.CancelledError as e:
-                logging.error(f"Query processing cancelled: {e}")
-                st.error("Operation was cancelled. Please try again.")
-                await chat_session.cleanup_servers()
-            except Exception as e:
-                error_msg = f"Error processing response: {str(e)}"
-                logging.error(error_msg)
-                with st.chat_message("assistant"):
-                    st.error(error_msg)
-                await chat_session.cleanup_servers()
-
-        st.rerun()
-
-if __name__ == "__main__":
+    # Get LLM response synchronously via our event loop
     try:
-        asyncio.run(chat())
-    except asyncio.CancelledError as e:
-        logging.error(f"Main chat loop cancelled: {e}")
-        st.error("Application was cancelled unexpectedly. Please restart.")
+        llm_reply = loop.run_until_complete(
+            loop.run_in_executor(None, llm_client.get_response, st.session_state.messages, None)
+        )
+    except Exception as e:
+        st.error(f"LLM error: {e}")
+        st.stop()
+
+    # Attempt to parse JSON tool call
+    try:
+        payload = json.loads(llm_reply)
+    except json.JSONDecodeError:
+        payload = None
+
+    if payload and "tool" in payload:
+        tool_name = payload["tool"]
+        # Execute the tool and get result
+        try:
+            result = loop.run_until_complete(chat_session.process_llm_response(llm_reply))
+        except Exception as e:
+            result = f"Error executing tool {tool_name}: {e}"
+        # Show tool output
+        st.session_state.history.append({
+            "role": "assistant",
+            "content": f"**Tool `{tool_name}` output:** {result}"
+        })
+
+        # Feed tool JSON and result back to LLM for final answer
+        st.session_state.messages.append({"role": "assistant", "content": llm_reply})
+        st.session_state.messages.append({"role": "system", "content": result})
+        try:
+            final_reply = loop.run_until_complete(
+                loop.run_in_executor(None, llm_client.get_response, st.session_state.messages, None)
+            )
+        except Exception as e:
+            st.error(f"LLM error on final response: {e}")
+            st.stop()
+        # Show final LLM answer
+        st.session_state.history.append({"role": "assistant", "content": final_reply})
+        st.session_state.messages.append({"role": "assistant", "content": final_reply})
+    else:
+        # No tool call, show direct LLM reply
+        st.session_state.history.append({"role": "assistant", "content": llm_reply})
+        st.session_state.messages.append({"role": "assistant", "content": llm_reply})
+
+    
