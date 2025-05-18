@@ -231,7 +231,7 @@ class LLMClient:
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer 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",
+            "Authorization": f"Bearer {self.api_key}",
         }
         payload = {
             "messages": messages,
