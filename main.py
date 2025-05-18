@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -227,20 +228,7 @@ class LLMClient:
         self.api_key: str = api_key
 
     def get_response(self, messages: list[dict[str, str]], tools: list[dict] = None) -> str:
-        """Get a response from the LLM.
-
-        Args:
-            messages: A list of message dictionaries.
-
-        Returns:
-            The LLM's response as a string.
-
-        Raises:
-            httpx.RequestError: If the request to the LLM fails.
-        """
         url = "https://api.groq.com/openai/v1/chat/completions"
-        #url = "https://api.groq.com/openai/v1"
-
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer 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",
@@ -248,37 +236,43 @@ class LLMClient:
         payload = {
             "messages": messages,
             "model": "llama-3.1-8b-instant",
-            #"model": "llama3-8b-8192",
-            #"model": "meta-llama/llama-4-scout-17b-16e-instruct",
             "temperature": 0.7,
             "max_tokens": 4096,
             "top_p": 1,
             "stream": False,
-            "stop": None,
             "tools": tools,
             "tool_choice": "auto"
         }
 
-        try:
-            with httpx.Client() as client:
-                response = client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
+        max_retries = 5
+        backoff = 2  # start at 2 seconds
 
-        except httpx.RequestError as e:
-            error_message = f"Error getting LLM response: {str(e)}"
-            logging.error(error_message)
+        for attempt in range(max_retries):
+            try:
+                with httpx.Client() as client:
+                    response = client.post(url, headers=headers, json=payload)
+                    if response.status_code == 429:
+                        retry_after = int(response.headers.get("retry-after", backoff))
+                        logging.warning(f"Rate limit hit. Retrying after {retry_after}s...")
+                        time.sleep(retry_after)
+                        backoff *= 2
+                        continue
+                    response.raise_for_status()
+                    return response.json()["choices"][0]["message"]["content"]
 
-            if isinstance(e, httpx.HTTPStatusError):
-                status_code = e.response.status_code
-                logging.error(f"Status code: {status_code}")
-                logging.error(f"Response details: {e.response.text}")
+            except httpx.HTTPStatusError as e:
+                logging.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
+                if e.response.status_code == 429 and attempt < max_retries - 1:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                raise
 
-            return (
-                f"I encountered an error: {error_message}. "
-                "Please try again or rephrase your request."
-            )
+            except Exception as e:
+                logging.error(f"Unexpected error: {e}")
+                raise
+
+        raise RuntimeError("Max retries exceeded while calling LLM")
 
 
 class ChatSession:
