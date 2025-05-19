@@ -1,7 +1,7 @@
 import sys
 import streamlit as st
 import asyncio
-import json
+import json, html
 from main import Configuration, Server, LLMClient, ChatSession
 
 # Streamlit page must be configured first
@@ -39,7 +39,8 @@ def init_chat_backend():
     for srv in servers:
         loop.run_until_complete(srv.initialize())
 
-    llm = LLMClient(config.llm_api_key)
+    llm = LLMClient(config.llm_api_key, servers)
+    loop.run_until_complete(llm.initialize_tools())
     chat_session = ChatSession(servers, llm)
     return loop, servers, llm, chat_session
 
@@ -70,12 +71,21 @@ if "messages" not in st.session_state:
 
 # Display conversation history with bubbles
 def display_message(role, content):
+    # Escape any HTML-sensitive characters so <function=...> is shown literally
+    safe_content = html.escape(content)
     if role == "user":
         avatar = '<img class="avatar" src="https://i.imgur.com/0D4iFPC.png" />'
-        bubble = f'<div class="chat-container">{avatar}<div class="user-bubble">{content}</div></div>'
+        bubble = (
+            f'<div class="chat-container">{avatar}'
+            f'<div class="user-bubble">{safe_content}</div></div>'
+        )
     else:
         avatar = '<img class="avatar" src="https://i.imgur.com/8Km9tLL.png" />'
-        bubble = f'<div class="chat-container"><div class="assistant-bubble">{content}</div>{avatar}</div>'
+        bubble = (
+            f'<div class="chat-container">'
+            f'<div class="assistant-bubble">{safe_content}</div>{avatar}'
+            '</div>'
+        )
     st.markdown(bubble, unsafe_allow_html=True)
 
 for entry in st.session_state.history:

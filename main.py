@@ -197,6 +197,17 @@ class Tool:
         self.description: str = description
         self.input_schema: dict[str, Any] = input_schema
 
+    def to_api_dict(self) -> dict:
+        """Convert the tool to a dictionary format for the API."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema
+            }
+        }        
+
     def format_for_llm(self) -> str:
         """Format tool information for LLM.
 
@@ -214,6 +225,7 @@ class Tool:
                 args_desc.append(arg_desc)
 
         return f"""
+
 Tool: {self.name}
 Description: {self.description}
 Arguments:
@@ -224,45 +236,53 @@ Arguments:
 class LLMClient:
     """Manages communication with the LLM provider."""
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, servers: list[Server]) -> None:
         self.api_key: str = api_key
+        self.servers: list[Server] = servers
+        self.all_tools: list[dict] = []  # Tools will be populated later
+        self.tools_description: str = ""
+
+    async def initialize_tools(self) -> None:
+        """Asynchronously fetch and store tools from all servers."""
+        for server in self.servers:
+            try:
+                tools = await server.list_tools()
+                # Convert Tool objects to dictionaries
+                self.all_tools.extend([tool.to_api_dict() for tool in tools])
+            except Exception as e:
+                logging.error(f"Failed to fetch tools from server {server.name}: {e}")
 
     def get_response(self, messages: list[dict[str, str]], tools: list[dict] = None) -> str:
-        #url = "https://api.together.xyz/v1/chat/completions"
-        #headers = {
-        #    "Authorization": f"Bearer 747b8e27df4f50bca407b29da55d05c6fe9bddc80ce71fea5ceb205d0adad622",
-        #    "Content-Type": "application/json"
-        #}
-        #payload = {
-        #    "model": "mistralai/Mistral-7B-Instruct-v0.2",
-        #    "messages": messages,
-        #    "temperature": 0.7
-        #}
 
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
            "Content-Type": "application/json",
            "Authorization": f"Bearer {self.api_key}",
         }
+        # Base payload fields that always go out
         payload = {
-           "messages": messages,
-           "model": "llama-3.1-8b-instant",
-           #"model": "Llama-3-Groq-8B-Tool-Use",
-           "temperature": 0.7,
-           "max_tokens": 4096,
-           "top_p": 1,
-           "stream": False,
-           "tools": tools,
-           "tool_choice": "auto"
+            "messages": messages,
+            "model": "llama-3.1-8b-instant",
+            "temperature": 0.7,
+            "max_tokens": 4096,
+            "top_p": 1,
+            "stream": False,
         }
-        
 
+        # Conditionally inject tools only if there are any
+        if self.all_tools:
+            payload["tools"] = self.all_tools
+            payload["tool_choice"] = "auto"
+
+        # (Optional) log it to debug
+        logging.debug("Sending payload: %s", json.dumps(payload, indent=2))
+                
         max_retries = 5
         backoff = 2  # start at 2 seconds
 
         for attempt in range(max_retries):
             try:
-                with httpx.Client() as client:
+                with httpx.Client(timeout=30.0) as client:
                     response = client.post(url, headers=headers, json=payload)
                     if response.status_code == 429:
                         retry_after = int(response.headers.get("retry-after", backoff))
@@ -270,8 +290,31 @@ class LLMClient:
                         time.sleep(retry_after)
                         backoff *= 2
                         continue
-                    response.raise_for_status()
-                    return response.json()["choices"][0]["message"]["content"]
+                    try:
+                        response.raise_for_status()
+                        data = response.json()
+                        logging.info("LLM response JSON: %s", data)
+                        choice = data["choices"][0]["message"]
+
+                        # 1) If the model invoked a tool:
+                        if "tool_calls" in choice and choice["tool_calls"]:
+                            call = choice["tool_calls"][0]["function"]
+                            name = call["name"]
+                            # `arguments` is a JSON‐encoded string; parse it
+                            args = json.loads(call["arguments"])
+                            # Return exactly the JSON object to drive your tool executor
+                            return json.dumps({"tool": name, "arguments": args})
+
+                        # 2) Otherwise return the normal content:
+                        content = choice.get("content")
+                        if content is not None:
+                            return content
+
+                        # 3) If neither is present, raise for visibility
+                        raise RuntimeError(f"Unexpected LLM response shape: {data}")
+                    except httpx.HTTPStatusError:
+                        logging.error("LLM error response body: %s", response.text)
+                        raise
 
             except httpx.HTTPStatusError as e:
                 logging.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
@@ -320,33 +363,37 @@ class ChatSession:
         try:
             tool_call = json.loads(llm_response)
             if "tool" in tool_call and "arguments" in tool_call:
-                logging.info(f"Executing tool: {tool_call['tool']}")
-                logging.info(f"With arguments: {tool_call['arguments']}")
+                name = tool_call["tool"]
+                raw_args = tool_call["arguments"]
 
+                # Find the matching Tool schema
                 for server in self.servers:
                     tools = await server.list_tools()
-                    if any(tool.name == tool_call["tool"] for tool in tools):
+                    for tool in tools:
+                        if tool.name == name:
+                            schema = tool.input_schema
+                            break
+                    else:
+                        continue
+                    break
+                else:
+                    return f"No server found with tool: {name}"
+
+                # Sanitize each argument according to its schema type
+                props = schema.get("properties", {})
+                for arg_name, arg_value in list(raw_args.items()):
+                    expected = props.get(arg_name, {}).get("type")
+                    # If schema says object or array, but we got a str, try to parse
+                    if expected in ("object", "array") and isinstance(arg_value, str):
                         try:
-                            result = await server.execute_tool(
-                                tool_call["tool"], tool_call["arguments"]
-                            )
+                            raw_args[arg_name] = json.loads(arg_value)
+                        except json.JSONDecodeError:
+                            # Fallback: empty object or list
+                            raw_args[arg_name] = {} if expected == "object" else []
 
-                            if isinstance(result, dict) and "progress" in result:
-                                progress = result["progress"]
-                                total = result["total"]
-                                percentage = (progress / total) * 100
-                                logging.info(
-                                    f"Progress: {progress}/{total} ({percentage:.1f}%)"
-                                )
-
-                            return f"Tool execution result: {result}"
-                        except Exception as e:
-                            error_msg = f"Error executing tool: {str(e)}"
-                            logging.error(error_msg)
-                            return error_msg
-
-                return f"No server found with tool: {tool_call['tool']}"
-            return llm_response
+                # Now execute with corrected args
+                result = await server.execute_tool(name, raw_args)
+                return f"Tool execution result: {result}"
         except json.JSONDecodeError:
             return llm_response
 
@@ -402,7 +449,7 @@ class ChatSession:
 
                     messages.append({"role": "user", "content": user_input})
 
-                    llm_response = self.llm_client.get_response(messages)
+                    llm_response = self.llm_client.get_response(messages, all_tools)
                     logging.info("\nAssistant: %s", llm_response)
 
                     result = await self.process_llm_response(llm_response)
@@ -411,7 +458,7 @@ class ChatSession:
                         messages.append({"role": "assistant", "content": llm_response})
                         messages.append({"role": "system", "content": result})
 
-                        final_response = self.llm_client.get_response(messages)
+                        final_response = self.llm_client.get_response(messages, all_tools)
                         logging.info("\nFinal response: %s", final_response)
                         messages.append(
                             {"role": "assistant", "content": final_response}

@@ -55,13 +55,14 @@ def fly_information(flight_iata: str) -> str:
     :param flight_iata: The IATA flight number (e.g., 'UA100').
     :return: A formatted string with flight details.
     """
-    api_key = os.getenv("AVIATIONSTACK_API_KEY")
-    if not api_key:
-        return "Error: AVIATIONSTACK_API_KEY environment variable not set."
+    #api_key = os.getenv("AVIATIONSTACK_API_KEY")
+    #if not api_key:
+    #    return "Error: AVIATIONSTACK_API_KEY environment variable not set."
 
     url = "http://api.aviationstack.com/v1/flights"
     params = {
-        "access_key": api_key,
+        #"access_key": api_key,
+        "access_key": "3b7de7457c004c9f4ce76ee1511a6621",
         "flight_iata": flight_iata
     }
 
