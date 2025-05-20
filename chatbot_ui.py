@@ -54,18 +54,28 @@ if "messages" not in st.session_state:
         tools.extend(loop.run_until_complete(srv.list_tools()))
     desc = "\n".join(t.format_for_llm() for t in tools)
     system_msg = (
-        "You are an assistant with access to these tools:\n\n"
-        f"{desc}\n\n"
-        "If you need a tool, respond *only* with JSON (no extra text):\n"
-        '{"tool":"<name>","arguments":{…}}\n'
-        "Otherwise, answer as a helpful assistant."
-        "You must NOT simulate tool execution; instead, when a tool is required, respond ONLY with the exact JSON object for the tool invocation, and nothing else. "
-        "Do NOT include any sample outputs or extra commentary."
-        "When no tool is needed, reply with a natural language answer."
-        '{"tool":"<name>","arguments":{…}}\n'
-        "Otherwise, answer as a helpful assistant."
+        "You are a helpful assistant with real access to these tools:\n\n"
+        f"{desc}\n"
+        "Choose the appropriate tool based on the user's question and execute the tool to perform the action. "
+        "If no tool is needed, reply directly.\n\n"
+        "if a tool does not work, explain the error to the user and suggest a different tool.\n\n"
+        "IMPORTANT: When you need to use a tool, you must ONLY respond with "
+        "the exact JSON object format below, nothing else:\n"
+        "{\n"
+        '    "tool": "tool-name",\n'
+        '    "arguments": {\n'
+        '        "argument-name": "value"\n'
+        "    }\n"
+        "}\n\n"
+        "After receiving a tool's response:\n"
+        "1. Transform the raw data into a natural, conversational response\n"
+        "2. Keep responses concise but informative\n"
+        "3. Focus on the most relevant information\n"
+        "4. Use appropriate context from the user's question\n"
+        "5. Avoid simply repeating the raw data\n\n"
+        "Please use only the tools that are explicitly defined above."
     )
-    
+
     st.session_state.messages = [{"role": "system", "content": system_msg}]
     st.session_state.history = []
 
@@ -94,45 +104,63 @@ for entry in st.session_state.history:
 # Chat input from user
 user_text = st.chat_input("You:")
 if user_text:
+    # 1) Record user
     st.session_state.history.append({"role": "user", "content": user_text})
     st.session_state.messages.append({"role": "user", "content": user_text})
 
+    # 2) Trim context: keep only system + last 10 user/assistant pairs
+    max_exchanges = 10
+    system_msg = st.session_state.messages[0]
+    recent = st.session_state.messages[-(max_exchanges * 2):]
+    payload_msgs = [system_msg] + recent
+
+    # 3) Call LLM with trimmed payload
     try:
         llm_reply = loop.run_until_complete(
-            loop.run_in_executor(None, llm_client.get_response, st.session_state.messages, None)
+            loop.run_in_executor(None, llm_client.get_response, payload_msgs, None)
         )
     except Exception as e:
         st.error(f"LLM error: {e}")
         st.stop()
 
+    # 4) Handle tool calls or plain replies
     try:
         payload = json.loads(llm_reply)
     except json.JSONDecodeError:
         payload = None
 
     if payload and "tool" in payload:
+        # Execute the tool
         tool_name = payload["tool"]
         try:
             result = loop.run_until_complete(chat_session.process_llm_response(llm_reply))
         except Exception as e:
             result = f"Error executing tool {tool_name}: {e}"
-        st.session_state.history.append({"role": "assistant", "content": f"**Tool `{tool_name}` output:** {result}"})
+        st.session_state.history.append({
+            "role": "assistant",
+            "content": f"**Tool `{tool_name}` output:** {result}"
+        })
 
-        st.session_state.messages.append({"role": "assistant", "content": llm_reply})
-        st.session_state.messages.append({"role": "system", "content": result})
+        # Feed back into trimmed context for final answer
+        feedback = payload_msgs + [
+            {"role": "assistant", "content": llm_reply},
+            {"role": "system",    "content": result},
+        ]
         try:
             final_reply = loop.run_until_complete(
-                loop.run_in_executor(None, llm_client.get_response, st.session_state.messages, None)
+                loop.run_in_executor(None, llm_client.get_response, feedback, None)
             )
         except Exception as e:
             st.error(f"LLM error on final response: {e}")
             st.stop()
         st.session_state.history.append({"role": "assistant", "content": final_reply})
         st.session_state.messages.append({"role": "assistant", "content": final_reply})
+
     else:
+        # Plain assistant reply
         st.session_state.history.append({"role": "assistant", "content": llm_reply})
         st.session_state.messages.append({"role": "assistant", "content": llm_reply})
 
-    # Refresh display
+    # 5) Re‑render the visible chat bubbles
     for entry in st.session_state.history:
         display_message(entry["role"], entry["content"])

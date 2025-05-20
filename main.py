@@ -449,7 +449,13 @@ class ChatSession:
 
                     messages.append({"role": "user", "content": user_input})
 
-                    llm_response = self.llm_client.get_response(messages, all_tools)
+                    # ▶️ Trim context before sending to LLM
+                    max_exchanges = 10  # last 10 user/assistant pairs
+                    system_msg = messages[0]
+                    recent = messages[-(max_exchanges * 2):]
+                    payload_msgs = [system_msg] + recent
+
+                    llm_response = self.llm_client.get_response(payload_msgs, all_tools)
                     logging.info("\nAssistant: %s", llm_response)
 
                     result = await self.process_llm_response(llm_response)
@@ -458,7 +464,11 @@ class ChatSession:
                         messages.append({"role": "assistant", "content": llm_response})
                         messages.append({"role": "system", "content": result})
 
-                        final_response = self.llm_client.get_response(messages, all_tools)
+                        feedback = payload_msgs + [
+                            {"role": "assistant", "content": llm_response},
+                            {"role": "system",    "content": result},
+                        ]
+                        final_response = self.llm_client.get_response(feedback, all_tools)
                         logging.info("\nFinal response: %s", final_response)
                         messages.append(
                             {"role": "assistant", "content": final_response}
@@ -482,8 +492,10 @@ async def main() -> None:
         Server(name, srv_config)
         for name, srv_config in server_config["mcpServers"].items()
     ]
-    llm_client = LLMClient(config.llm_api_key)
+    llm_client = LLMClient(config.llm_api_key, servers)
+    await llm_client.initialize_tools()
     chat_session = ChatSession(servers, llm_client)
+    
     await chat_session.start()
 
 
