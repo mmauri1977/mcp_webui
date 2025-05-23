@@ -24,8 +24,8 @@ class Configuration:
     def __init__(self) -> None:
         """Initialize configuration with environment variables."""
         self.load_env()
-        self.api_key = "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"
-        #os.getenv("LLM_API_KEY")
+        #self.api_key = "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"
+        self.api_key = os.getenv("OPENAI_API_KEY")
 
     @staticmethod
     def load_env() -> None:
@@ -254,7 +254,9 @@ class LLMClient:
 
     def get_response(self, messages: list[dict[str, str]], tools: list[dict] = None) -> str:
 
-        url = "https://api.groq.com/openai/v1/chat/completions"
+        #url = "https://api.groq.com/openai/v1/chat/completions"
+
+        url = "https://api.openai.com/v1/chat/completions"
         headers = {
            "Content-Type": "application/json",
            "Authorization": f"Bearer {self.api_key}",
@@ -262,9 +264,10 @@ class LLMClient:
         # Base payload fields that always go out
         payload = {
             "messages": messages,
-            "model": "llama-3.1-8b-instant",
-            "temperature": 0.7,
-            "max_tokens": 4096,
+            #"model": "llama-3.1-8b-instant",
+            "model": "o4-mini",
+            #"temperature": 0.0,
+            "max_completion_tokens": 4096,
             "top_p": 1,
             "stream": False,
         }
@@ -296,21 +299,36 @@ class LLMClient:
                         logging.info("LLM response JSON: %s", data)
                         choice = data["choices"][0]["message"]
 
-                        # 1) If the model invoked a tool:
+                        #If the model invoked a tool:
+                        tool_call = None
+
+                        # Prefer OpenAI-style tool_calls if present
                         if "tool_calls" in choice and choice["tool_calls"]:
                             call = choice["tool_calls"][0]["function"]
-                            name = call["name"]
-                            # `arguments` is a JSON‐encoded string; parse it
-                            args = json.loads(call["arguments"])
-                            # Return exactly the JSON object to drive your tool executor
-                            return json.dumps({"tool": name, "arguments": args})
+                            tool_call = {
+                                "tool": call["name"],
+                                "arguments": json.loads(call["arguments"])
+                            }
 
-                        # 2) Otherwise return the normal content:
+                        # Else fallback to plain content JSON string (from some models)
+                        elif choice.get("content"):
+                            try:
+                                content_obj = json.loads(choice["content"])
+                                if isinstance(content_obj, dict) and "tool" in content_obj and "arguments" in content_obj:
+                                    tool_call = content_obj
+                            except json.JSONDecodeError:
+                                pass
+
+                        # If we found a tool call, return it as JSON string
+                        if tool_call:
+                            return json.dumps(tool_call)
+
+                        # Otherwise, return plain content or error
                         content = choice.get("content")
                         if content is not None:
                             return content
 
-                        # 3) If neither is present, raise for visibility
+                        # If neither is present, raise for visibility
                         raise RuntimeError(f"Unexpected LLM response shape: {data}")
                     except httpx.HTTPStatusError:
                         logging.error("LLM error response body: %s", response.text)
@@ -460,21 +478,23 @@ class ChatSession:
 
                     result = await self.process_llm_response(llm_response)
 
-                    if result != llm_response:
-                        messages.append({"role": "assistant", "content": llm_response})
-                        messages.append({"role": "system", "content": result})
+                    while True:
+                        result = await self.process_llm_response(llm_response)
 
-                        feedback = payload_msgs + [
-                            {"role": "assistant", "content": llm_response},
-                            {"role": "system",    "content": result},
-                        ]
-                        final_response = self.llm_client.get_response(feedback, all_tools)
-                        logging.info("\nFinal response: %s", final_response)
-                        messages.append(
-                            {"role": "assistant", "content": final_response}
-                        )
-                    else:
-                        messages.append({"role": "assistant", "content": llm_response})
+                        # If tool was called and executed, continue prompting the model
+                        if result != llm_response:
+                            messages.append({"role": "assistant", "content": llm_response})
+                            messages.append({"role": "system", "content": result})
+
+                            feedback = messages[-(max_exchanges * 2):]  # re-trim context
+                            llm_response = self.llm_client.get_response(feedback, all_tools)
+                            logging.info("\nFollow-up: %s", llm_response)
+                            continue  # loop again to check if another tool should be called
+
+                        else:
+                            # Done, this is the final response
+                            messages.append({"role": "assistant", "content": llm_response})
+                            break
 
                 except KeyboardInterrupt:
                     logging.info("\nExiting...")
