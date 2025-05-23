@@ -4,7 +4,7 @@
       "command": "uv",
       "args": [
         "--directory",                
-        "C:\\Users\\martin.mauri\\mcp_simple_chatbot", 
+        "C:\\Users\\martin.mauri\\mcp_simple_chatbot_webui", 
         "run",
         "server.py"]
     },
