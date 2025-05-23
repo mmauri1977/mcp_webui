@@ -24,7 +24,6 @@ class Configuration:
     def __init__(self) -> None:
         """Initialize configuration with environment variables."""
         self.load_env()
-        #self.api_key = "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"
         self.api_key = os.getenv("OPENAI_API_KEY")
 
     @staticmethod
