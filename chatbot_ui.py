@@ -23,7 +23,7 @@ st.markdown(
     display: flex;
     margin: 4px 0;
     align-items: center;
-    gap: 4px; /* opcional: reduce el espacio entre ícono y burbuja */
+    gap: 4px; 
     }
     .user-bubble { background-color: #DCF8C6; color: #000; padding: 12px; 
     border-radius: 16px 16px 0 16px; max-width: 60%; margin-left: auto; }
