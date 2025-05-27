@@ -255,19 +255,18 @@ class LLMClient:
 
         #url = "https://api.groq.com/openai/v1/chat/completions"
 
-        url = "https://api.openai.com/v1/chat/completions"
+        url = "https://api.qa.saia.ai/chat"
         headers = {
            "Content-Type": "application/json",
            "Authorization": f"Bearer {self.api_key}",
         }
         # Base payload fields that always go out
         payload = {
+            "model": "openai/gpt-4o",
             "messages": messages,
-            #"model": "llama-3.1-8b-instant",
-            "model": "o4-mini",
-            #"temperature": 0.0,
-            "max_completion_tokens": 4096,
+            "temperature": 0.3,
             "top_p": 1,
+            "max_tokens": 4096,
             "stream": False,
         }
 
